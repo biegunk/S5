@@ -10,6 +10,7 @@ from jax.nn.initializers import lecun_normal, normal
 from jax.scipy.linalg import block_diag
 
 from s5dev.models.hyena import Activation, mul_sum
+from s5dev.models.lru import LRU
 from s5dev.models.rotrnn import RotRNN
 from s5dev.models.ssm_init import (
     init_CV,
@@ -586,6 +587,15 @@ class S5Operator(nn.Module):
         elif self.filter_cls == "rotrnn":
             self.filter_fn = [
                 RotRNN(
+                    lru_dim=self.ssm_size,
+                    hidden_dim=self.d_model * self.inner_factor,
+                    **filter_args,
+                )
+                for _ in range(self.order - 1)
+            ]
+        elif self.filter_cls == "lru":
+            self.filter_fn = [
+                LRU(
                     lru_dim=self.ssm_size,
                     hidden_dim=self.d_model * self.inner_factor,
                     **filter_args,
