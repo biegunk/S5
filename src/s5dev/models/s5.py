@@ -1,37 +1,38 @@
-from functools import partial
 import math
+from functools import partial
 
-from einops import rearrange, repeat
-from flax import linen as nn
-from flax.linen.initializers import normal as flax_normal
 import jax
 import jax.numpy as np
+from einops import rearrange
+from flax import linen as nn
+from flax.linen.initializers import normal as flax_normal
 from jax.nn.initializers import lecun_normal, normal
 from jax.scipy.linalg import block_diag
 
 from s5dev.models.hyena import Activation, mul_sum
+from s5dev.models.rotrnn import RotRNN
 from s5dev.models.ssm_init import (
     init_CV,
     init_log_steps,
     init_VinvB,
     make_DPLR_HiPPO,
-    trunc_standard_normal
+    trunc_standard_normal,
 )
 
 
 def discretize_zoh(Lambda, B_tilde, Delta):
-    """ Discretize a diagonalized, continuous-time linear SSM
-        using zero-order hold method.
-        Args:
-            Lambda (complex64): diagonal state matrix              (P,)
-            B_tilde (complex64): input matrix                      (P, H)
-            Delta (float32): discretization step sizes             (P,)
-        Returns:
-            discretized Lambda_bar (complex64), B_bar (complex64)  (P,), (P,H)
+    """Discretize a diagonalized, continuous-time linear SSM
+    using zero-order hold method.
+    Args:
+        Lambda (complex64): diagonal state matrix              (P,)
+        B_tilde (complex64): input matrix                      (P, H)
+        Delta (float32): discretization step sizes             (P,)
+    Returns:
+        discretized Lambda_bar (complex64), B_bar (complex64)  (P,), (P,H)
     """
     Identity = np.ones(Lambda.shape[0])
     Lambda_bar = np.exp(Lambda * Delta)
-    B_bar = (1/Lambda * (Lambda_bar-Identity))[..., None] * B_tilde
+    B_bar = (1 / Lambda * (Lambda_bar - Identity))[..., None] * B_tilde
     return Lambda_bar, B_bar
 
 
@@ -76,11 +77,11 @@ def apply_ssm(input_seq, Lambda_bar, B_bar, C_tilde, D, conj_sym):
         x: Array[complex64], shape (P,). Last state
         ys Array[float32], shape (L,H). Emissions with feedthrough
     """
-    
+
     # Apply state dynamics using parallel scan
     Lambda_elements = np.tile(Lambda_bar, reps=(len(input_seq), 1))  # shape (L,P)
     Bu_elements = jax.vmap(lambda u: B_bar @ u)(input_seq)  # shape (L,P)
-    
+
     # Apply state dynamics using parallel scan
     Lambda_elements = np.tile(Lambda_bar, reps=(len(input_seq), 1))  # shape (L,P)
     Bu_elements = jax.vmap(lambda u: B_bar @ u)(input_seq)  # shape (L,P)
@@ -90,12 +91,12 @@ def apply_ssm(input_seq, Lambda_bar, B_bar, C_tilde, D, conj_sym):
     # Apply state emissions
     conj_sym_fctr = 2 if conj_sym else 1
     ys = conj_sym_fctr * jax.vmap(lambda x: (C_tilde @ x).real)(xs) + D * input_seq
-    
+
     return xs[-1], ys
 
 
 class S5SSM(nn.Module):
-    """ The S5 SSM
+    """The S5 SSM
 
     The state space model is parameterized in complex modal coordinates.
     Consider the following real-valued state space model with state transtion matrix A,
@@ -124,13 +125,13 @@ class S5SSM(nn.Module):
             - 'lecun_normal': Sample from Lecun_normal, then apply modal transform, i.e. C_tilde = C @ V.
             - 'complex_normal': Directly sample a complex valued output matrix from standard normal.
                                 No further transformation applied, i.e. C_tilde = C.
-        dt_min:      (float32): minimum value to draw timescale values from when 
+        dt_min:      (float32): minimum value to draw timescale values from when
                                 initializing log_step
-        dt_max:      (float32): maximum value to draw timescale values from when 
+        dt_max:      (float32): maximum value to draw timescale values from when
                                 initializing log_step
         conj_sym    (bool):    Whether conjugate symmetry is enforced
         clip_eigs   (bool):    Whether to enforce left-half plane condition, i.e.
-                                constrain real part of eigenvalues to be negative. 
+                                constrain real part of eigenvalues to be negative.
                                 True recommended for autoregressive task/unbounded sequence lengths
                                 Discussed in https://arxiv.org/pdf/2206.11893.pdf.
         activation   (str):    type of activation to apply to SSM outputs
@@ -145,7 +146,7 @@ class S5SSM(nn.Module):
         D: Array[float32], (H,). Diagonal feedthrough matrix.
         log_step: Array[float32], (H,1). Per-feature timescale discretization value.
     where P_ = P//2 if conj_sym else P_ = P
-                
+
     """
 
     Lambda_re_init: jax.Array
@@ -162,22 +163,25 @@ class S5SSM(nn.Module):
     clip_eigs: bool = False
     activation: str = "gelu"
 
-
     def setup(self):
         """Initializes parameters once and performs discretization each time
-           the SSM is applied to a sequence
+        the SSM is applied to a sequence
         """
 
         if self.conj_sym:
             # Need to account for case where we actually sample real B and C, and then multiply
             # by the half sized Vinv and possibly V
-            local_P = 2*self.P
+            local_P = 2 * self.P
         else:
             local_P = self.P
 
         # Initialize diagonal state to state matrix Lambda (eigenvalues)
-        self.Lambda_re = self.param("Lambda_re", lambda rng, shape: self.Lambda_re_init, (None,))
-        self.Lambda_im = self.param("Lambda_im", lambda rng, shape: self.Lambda_im_init, (None,))
+        self.Lambda_re = self.param(
+            "Lambda_re", lambda rng, shape: self.Lambda_re_init, (None,)
+        )
+        self.Lambda_im = self.param(
+            "Lambda_im", lambda rng, shape: self.Lambda_im_init, (None,)
+        )
         if self.clip_eigs:
             self.Lambda = np.clip(self.Lambda_re, None, -1e-4) + 1j * self.Lambda_im
         else:
@@ -186,12 +190,9 @@ class S5SSM(nn.Module):
         # Initialize input to state (B) matrix
         B_init = lecun_normal()
         B_shape = (local_P, self.H)
-        self.B = self.param("B",
-                            lambda rng, shape: init_VinvB(B_init,
-                                                          rng,
-                                                          shape,
-                                                          self.Vinv),
-                            B_shape)
+        self.B = self.param(
+            "B", lambda rng, shape: init_VinvB(B_init, rng, shape, self.Vinv), B_shape
+        )
         B_tilde = self.B[..., 0] + 1j * self.B[..., 1]
 
         # Initialize state to output (C) matrix
@@ -202,18 +203,21 @@ class S5SSM(nn.Module):
             C_init = lecun_normal()
             C_shape = (self.H, local_P, 2)
         elif self.C_init in ["complex_normal"]:
-            C_init = normal(stddev=0.5 ** 0.5, dtype="complex")  # dtype="complex": allow jax backend to set correct precision
+            C_init = normal(
+                stddev=0.5**0.5, dtype="complex"
+            )  # dtype="complex": allow jax backend to set correct precision
         else:
             raise NotImplementedError(
-                   "C_init method {} not implemented".format(self.C_init))
+                "C_init method {} not implemented".format(self.C_init)
+            )
 
         if self.C_init in ["complex_normal"]:
             self.C = self.param("C", C_init, (self.H, self.P, 2))
 
         else:
-            self.C = self.param("C",
-                                lambda rng, shape: init_CV(C_init, rng, shape, self.V),
-                                C_shape)
+            self.C = self.param(
+                "C", lambda rng, shape: init_CV(C_init, rng, shape, self.V), C_shape
+            )
 
         self.C_tilde = self.C[..., 0] + 1j * self.C[..., 1]
 
@@ -221,9 +225,9 @@ class S5SSM(nn.Module):
         self.D = self.param("D", normal(stddev=1.0), (self.H,))
 
         # Initialize learnable discretization timescale value
-        self.log_step = self.param("log_step",
-                                   init_log_steps,
-                                   (self.P, self.dt_min, self.dt_max))
+        self.log_step = self.param(
+            "log_step", init_log_steps, (self.P, self.dt_min, self.dt_max)
+        )
         step = np.exp(self.log_step[:, 0])
 
         # Define activations
@@ -243,11 +247,11 @@ class S5SSM(nn.Module):
             input_sequence: Array[float32], shape (bsz, n_heads, H, n_seq_blocks, L)
                 The 5-dimensional is due to the shape imposed by the original Hyena implementation.
                 S5 assumes n_heads and n_seq_blocks are singleton dimensions.
-        
+
             input_sequence: Array[float32], shape (bsz, n_heads, H, n_seq_blocks, L)
                 The 5-dimensional is due to the shape imposed by the original Hyena implementation.
                 S5 assumes n_heads and n_seq_blocks are singleton dimensions.
-        
+
         Returns:
             output_sequence Array[float32](bsz, n_heads, H, n_seq_blocks, L)
             output_sequence Array[float32](bsz, n_heads, H, n_seq_blocks, L)
@@ -258,9 +262,14 @@ class S5SSM(nn.Module):
 
         # Apply input sequence to SSM using parallel scan. vmap over bsz axis.
         # Returns ys: shape (bsz, L, H)
-        _, ys = jax.vmap(
-            apply_ssm, in_axes=(0, None, None, None, None, None)
-        )(input_sequence, self.Lambda_bar, self.B_bar, self.C_tilde, self.D, self.conj_sym)
+        _, ys = jax.vmap(apply_ssm, in_axes=(0, None, None, None, None, None))(
+            input_sequence,
+            self.Lambda_bar,
+            self.B_bar,
+            self.C_tilde,
+            self.D,
+            self.conj_sym,
+        )
 
         if self.activation in ["full_glu"]:
             ys = nn.activation.gelu(ys, approximate=False)
@@ -276,9 +285,12 @@ class S5SSM(nn.Module):
             ys = nn.activation.gelu(ys, approximate=False)
         else:
             raise NotImplementedError(
-                "Activation: {} not implemented".format(self.activation))
+                "Activation: {} not implemented".format(self.activation)
+            )
 
-        output_sequence = np.expand_dims(ys.transpose(0, 2, 1), (1, 3))  # Now, (bsz,1,H,1,L)
+        output_sequence = np.expand_dims(
+            ys.transpose(0, 2, 1), (1, 3)
+        )  # Now, (bsz,1,H,1,L)
 
         return output_sequence
 
@@ -292,7 +304,7 @@ class S5SSM(nn.Module):
                 The (now 3-dim) shape is due to original Hyena implementation. S5 assumes
                 n_heads = 1. Seq length axes (i.e. n_blocks, seq_len) are singleton and omitted.
                 Using argument name `inpt` to avoid clash with built-in `input` function.
-        
+
         Returns:
             new_state: Array[complex64], shape (bsz, state_dim)
             output: Array[float32], shape (bsz, n_heads, H)
@@ -308,8 +320,12 @@ class S5SSM(nn.Module):
         #   y[i] = C x[i] + D u[i]
         # so make sure to compute output y with the new state.
         fctr = 2 if self.conj_sym else 1
-        new_state = jax.vmap(lambda x, u: self.Lambda_bar * x + self.B_bar @ u)(state, inpt)
-        y = jax.vmap(lambda x, u: fctr*(self.C_tilde @ x).real + self.D * u)(new_state, inpt)
+        new_state = jax.vmap(lambda x, u: self.Lambda_bar * x + self.B_bar @ u)(
+            state, inpt
+        )
+        y = jax.vmap(lambda x, u: fctr * (self.C_tilde @ x).real + self.D * u)(
+            new_state, inpt
+        )
 
         # Apply non-linear function
         if self.activation in ["full_glu"]:
@@ -326,21 +342,22 @@ class S5SSM(nn.Module):
             y = nn.activation.gelu(y, approximate=False)
         else:
             raise NotImplementedError(
-                "Activation: {} not implemented".format(self.activation))
+                "Activation: {} not implemented".format(self.activation)
+            )
 
-        output = y[:,None,:]   # Now, (bsz, 1, H)
-        
+        output = y[:, None, :]  # Now, (bsz, 1, H)
+
         return new_state, output
 
 
 def init_S5SSM(d_model, ssm_size, blocks, ssm_args):
     """Convenience function that will be used to initialize the SSM.
-       Same arguments as defined in S5SSM above."""
+    Same arguments as defined in S5SSM above."""
 
     block_size = int(ssm_size / blocks)
     Lambda, _, _, V, _ = make_DPLR_HiPPO(block_size)
 
-    if ssm_args['conj_sym']:
+    if ssm_args["conj_sym"]:
         block_size = block_size // 2
         ssm_size = ssm_size // 2
 
@@ -354,13 +371,7 @@ def init_S5SSM(d_model, ssm_size, blocks, ssm_args):
     V = block_diag(*([V] * blocks))
     Vinv = block_diag(*([Vc] * blocks))
 
-    return S5SSM(Lambda.real,
-                 Lambda.imag,
-                 V,
-                 Vinv,
-                 H=d_model,
-                 P=ssm_size,
-                 **ssm_args)
+    return S5SSM(Lambda.real, Lambda.imag, V, Vinv, H=d_model, P=ssm_size, **ssm_args)
 
 
 class IdentitySSM(nn.Module):
@@ -374,7 +385,6 @@ class IdentitySSM(nn.Module):
 
     def step(self, state, inpt, training=False):
         return state, inpt
-
 
 
 class S5Operator(nn.Module):
@@ -446,7 +456,7 @@ class S5Operator(nn.Module):
         return_state: bool. whether to return a state.
         filter_args: dict, optional. Keyword arguments to pass to filter class. default: None.
         d_output: int (optional). default: None.
-            Dimension of model outputs. If None, d_output set to d_model.        
+            Dimension of model outputs. If None, d_output set to d_model.
 
     Parameters (trainable)
 
@@ -480,7 +490,7 @@ class S5Operator(nn.Module):
     outer_mixing: bool = False
     drop_rate: float = 0.0
     filter_dropout: float = 0.0
-    filter_cls: str = 'None'
+    filter_cls: str = "None"
     post_order_ffn: bool = False
     jit_filter: bool = False
     short_filter_order: int = 3
@@ -494,22 +504,30 @@ class S5Operator(nn.Module):
 
     def setup(self):
         if self.d_model % self.num_heads != 0:
-            raise ValueError(f"Input dimension {self.d_model} must be divisible by the number of heads {self.num_heads}.")
-        
-        if self.l_max % self.num_blocks != 0:
-            raise ValueError(f"Maximum sequence length {self.l_max} must be divisible by block dimension {self.num_blocks}")
+            raise ValueError(
+                f"Input dimension {self.d_model} must be divisible by the number of heads {self.num_heads}."
+            )
 
-        if (self.order > 2):
-            print("WARNING: order > 2 recurrence is fine for parallel mode, but is erroneous in autoregressive mode.")
-            
-        if (self.num_heads > 1):
+        if self.l_max % self.num_blocks != 0:
+            raise ValueError(
+                f"Maximum sequence length {self.l_max} must be divisible by block dimension {self.num_blocks}"
+            )
+
+        if self.order > 2:
+            print(
+                "WARNING: order > 2 recurrence is fine for parallel mode, but is erroneous in autoregressive mode."
+            )
+
+        if self.num_heads > 1:
             raise ValueError(
                 f"num_heads > 1 is not supported for filter class {self.filter_cls}, but got {self.num_heads}. "
                 "Increasing number of heads likely doesn't contribute much to digonal SSM implentation."
             )
-        
-        if (self.num_blocks > 1):
-            raise ValueError(f"num_blocks > 1 is not supported for filter class {self.filter_cls}, but got {self.num_blocks}.")
+
+        if self.num_blocks > 1:
+            raise ValueError(
+                f"num_blocks > 1 is not supported for filter class {self.filter_cls}, but got {self.num_blocks}."
+            )
 
         self.head_dim = self.d_model // self.num_heads
 
@@ -523,39 +541,63 @@ class S5Operator(nn.Module):
 
         # if fused_bias_fc and FusedDense is None:
         if fused_bias_fc:
-            raise ImportError('fused_dense is not installed')
+            raise ImportError("fused_dense is not installed")
         if not fused_bias_fc:
             linear_cls = nn.Dense
 
-        out_kernel_init = flax_normal(stddev=initializer_range / math.sqrt(2 * self.n_layer))
-        self.out_proj = linear_cls(inner_factor * self.d_model, kernel_init=out_kernel_init) 
+        out_kernel_init = flax_normal(
+            stddev=initializer_range / math.sqrt(2 * self.n_layer)
+        )
+        self.out_proj = linear_cls(
+            inner_factor * self.d_model, kernel_init=out_kernel_init
+        )
         self.in_proj = linear_cls(inner_factor * (self.order + 1) * self.d_model)
         if self.post_order_ffn:
-            self.ord_proj_w = self.param("ord_proj_w",
-                                         normal(stddev=1/math.sqrt(self.head_dim)),
-                                         (self.order, self.num_heads, self.num_heads))
+            self.ord_proj_w = self.param(
+                "ord_proj_w",
+                normal(stddev=1 / math.sqrt(self.head_dim)),
+                (self.order, self.num_heads, self.num_heads),
+            )
 
     def setup_filters(self, filter_cls, filter_args):
         "Initializes the explicit and implicit filters"
-        assert self.order >= 2, f'Order must be at least 2, (got {self.order})'
-        
+        assert self.order >= 2, f"Order must be at least 2, (got {self.order})"
+
         d_inner = self.d_model * self.inner_factor * (self.order + 1)
 
         if self.short_filter_order > 0:
-            self.short_filter = nn.Conv(d_inner,
-                                        [self.short_filter_order],
-                                        feature_group_count=d_inner,
-                                        padding=self.short_filter_order - 1)
+            self.short_filter = nn.Conv(
+                d_inner,
+                [self.short_filter_order],
+                feature_group_count=d_inner,
+                padding=self.short_filter_order - 1,
+            )
 
-        if self.filter_cls == 'hyena_S5':
+        if self.filter_cls == "hyena_S5":
             self.filter_fn = [
-                init_S5SSM(self.d_model * self.inner_factor, self.ssm_size, self.ssm_blocks, filter_args)
-                for _ in range(self.order-1)
+                init_S5SSM(
+                    self.d_model * self.inner_factor,
+                    self.ssm_size,
+                    self.ssm_blocks,
+                    filter_args,
+                )
+                for _ in range(self.order - 1)
             ]
-        elif self.filter_cls == 'identity':
-            self.filter_fn = [IdentitySSM() for _ in range(self.order-1)]
+        elif self.filter_cls == "rotrnn":
+            self.filter_fn = [
+                partial(
+                    RotRNN,
+                    lru_dim=self.ssm_size,
+                    hidden_dim=self.d_model * self.inner_factor,
+                    **filter_args,
+                )
+            ]
+        elif self.filter_cls == "identity":
+            self.filter_fn = [IdentitySSM() for _ in range(self.order - 1)]
         else:
-            raise NotImplementedError("filter {} not implemented".format(self.filter_cls))
+            raise NotImplementedError(
+                "filter {} not implemented".format(self.filter_cls)
+            )
 
     @nn.compact
     def __call__(self, input_sequence, training: bool):
@@ -564,10 +606,10 @@ class S5Operator(nn.Module):
         Args:
             input_sequence: Array[float32], shape (bsz, seq_len, d_model)
             training: bool. If True, model is in training mode and dropout should be used.
-        
+
         Returns:
             output_sequence: Array[float32], shape (bsz, seq_len, d_output)
-        """      
+        """
 
         # Make order+1 linear projections of the input, each with width (inner_factor * d_model,)
         # These projections are denoted as (v, x1, ..., xN) in the Hyena paper (Defn. 3.1)
@@ -585,10 +627,13 @@ class S5Operator(nn.Module):
         # Reshape linear projections for multi-headed operation (not implemented)
         # and applying filter to blocks of the sequence length (not implemened).
         d_inner = uc.shape[-1]
-        uc = rearrange(uc, 'b l d -> b d l')  # now, bsz, d_inner, seq_len)
+        uc = rearrange(uc, "b l d -> b d l")  # now, bsz, d_inner, seq_len)
         uc = rearrange(
-            uc, 'b (ho v) (z l) -> b ho v z l',
-            z=self.num_blocks, ho=self.num_heads, v=d_inner // self.num_heads,  # z=1, ho=1
+            uc,
+            "b (ho v) (z l) -> b ho v z l",
+            z=self.num_blocks,
+            ho=self.num_heads,
+            v=d_inner // self.num_heads,  # z=1, ho=1
         )
         # now, (bsz, n_heads, (order+1) * scaled_d_head, n_blocks, seq_len//n_blocks)
         # where (d_inner // n_heads) = (order+1) * (inner_factor * d_model) // n_heads
@@ -609,29 +654,38 @@ class S5Operator(nn.Module):
         # chunks of size (inner_factor * d_head,) = scaled_d_head.
         # https://github.com/HazyResearch/safari/blob/02220c69d247e5473616cd053a443ad99fd2559b/src/models/sequence/hyena.py#L323
 
-        *x, v = np.split(uc, self.order+1, axis=2) # (order+1,) projections, of shape (bsz, n_heads, scaled_d_head, n_blocks, seq_len//n_blocks)
+        *x, v = np.split(
+            uc, self.order + 1, axis=2
+        )  # (order+1,) projections, of shape (bsz, n_heads, scaled_d_head, n_blocks, seq_len//n_blocks)
 
         # Work through linear projections in reverse (Question: Is doing this in reverse important??)
         for o, x_o in enumerate(reversed(x[1:])):
             if self.outer_mixing:
-                raise NotImplementedError("outer mixing not implemented for hyena_S5 yet")
+                raise NotImplementedError(
+                    "outer mixing not implemented for hyena_S5 yet"
+                )
             else:
                 v = self.dropout(deterministic=not training)(v * x_o)
 
             # Apply long convolution
-            v = self.filter_fn[o](v) # input v is ndim=5 (batch_size, ho=1, scaled_d_model, z=1, seq_len)
+            v = self.filter_fn[o](
+                v
+            )  # input v is ndim=5 (batch_size, ho=1, scaled_d_model, z=1, seq_len)
 
             # Apply another linear projection before the next recurrent. Not useful if order=2.
             if self.post_order_ffn:
                 w = self.ord_proj_w[o]
                 v = mul_sum(
-                    rearrange(w, 'h1 h2 -> 1 h1 h2 1 1 1'), rearrange(v, 'b h v z l -> b h 1 v z l')
+                    rearrange(w, "h1 h2 -> 1 h1 h2 1 1 1"),
+                    rearrange(v, "b h v z l -> b h 1 v z l"),
                 )
 
         v = v * x[0]  # elementwise-multiply with final projection
-        
+
         # Finally, push mixed and convolved projections through activation and output
-        v = rearrange(v, 'b h v z l -> b (z l) (h v)', z=self.num_blocks, h=self.num_heads)  # now, (bsz, seq_len, d_inner)
+        v = rearrange(
+            v, "b h v z l -> b (z l) (h v)", z=self.num_blocks, h=self.num_heads
+        )  # now, (bsz, seq_len, d_inner)
         y = self.activation(v)
         y = self.out_proj(y)
 
@@ -639,7 +693,6 @@ class S5Operator(nn.Module):
             return y, None
 
         return y
-
 
     def step(self, state, inpt):
         """Apply order-N Hyena recurence to an input.
@@ -650,11 +703,11 @@ class S5Operator(nn.Module):
             state: Array[float32], shape (bsz, ssm_size)
                 State of implicit filter at last time step.
             inpt: Array[float32], shape (bsz, d_model).
-        
+
         Returns:
             new_state: Array[complex64], shape (bsz, ssm_size)
             output: Array[float32], shape (bsz, d_output)
-        """      
+        """
 
         # Make order+1 linear projections of the input, each with width (inner_factor * d_model,)
         # These projections are denoted as (v, x1, ..., xN) in the Hyena paper (Defn. 3.1)
@@ -667,17 +720,24 @@ class S5Operator(nn.Module):
         # and applying filter to blocks of the sequence length (not implemened).
         d_inner = uc.shape[-1]
         uc = rearrange(
-            uc, 'b (h v) -> b h v', h=self.num_heads, v=d_inner // self.num_heads,  # h=1
-        ) # now, (bsz, n_heads, (order+1)*scaled_d_head),  where scaled_d_head = inner_factor * d_head
-        
-        *x, v = np.split(uc, self.order+1, axis=2) # (order+1,) projections, of shape (bsz, n_heads, scaled_d_head)
+            uc,
+            "b (h v) -> b h v",
+            h=self.num_heads,
+            v=d_inner // self.num_heads,  # h=1
+        )  # now, (bsz, n_heads, (order+1)*scaled_d_head),  where scaled_d_head = inner_factor * d_head
+
+        *x, v = np.split(
+            uc, self.order + 1, axis=2
+        )  # (order+1,) projections, of shape (bsz, n_heads, scaled_d_head)
 
         # Work through linear projections in reverse (Question: Is doing this in reverse important??)
         # NOTE: Retaining for-loop for consistency with __call__, but should NOT be
         #       looped through more than once, i.e. order = 2). Else, not equivalent to __call__.
         for o, x_o in enumerate(reversed(x[1:])):
             if self.outer_mixing:
-                raise NotImplementedError("outer mixing not implemented for hyena_S5 yet")
+                raise NotImplementedError(
+                    "outer mixing not implemented for hyena_S5 yet"
+                )
             else:
                 v = v * x_o
 
@@ -688,13 +748,13 @@ class S5Operator(nn.Module):
             if self.post_order_ffn:
                 w = self.ord_proj_w[o]
                 v = mul_sum(
-                    rearrange(w, 'h1 h2 -> 1 h1 h2 1'), rearrange(v, 'b h v -> b h 1 v')
+                    rearrange(w, "h1 h2 -> 1 h1 h2 1"), rearrange(v, "b h v -> b h 1 v")
                 )  # Not verified!
 
         v = v * x[0]  # elementwise-multiply with final projection
-        
+
         # Finally, push mixed and convolved projections through activation and output
-        v = rearrange(v, 'b h v -> b (h v)', h=self.num_heads)  # now, (bsz, d_inner)
+        v = rearrange(v, "b h v -> b (h v)", h=self.num_heads)  # now, (bsz, d_inner)
         y = self.activation(v)
         y = self.out_proj(y)
 
