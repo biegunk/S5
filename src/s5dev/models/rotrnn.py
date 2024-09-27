@@ -145,5 +145,9 @@ class RotRNN(nn.Module):
 
         y = y.transpose(2, 1, 0, 3)  # H T B N -> B T H N
         y = jnp.einsum("Dn,BTn->BTD", C, y.reshape(batch_sz, T, -1)) + D * x
-        # squeeze batch dimension
-        return y[0]
+
+        output_sequence = jnp.expand_dims(
+            y.transpose(0, 2, 1), (1, 3)
+        )  # Now, (bsz,1,H,1,L)
+
+        return output_sequence
