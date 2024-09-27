@@ -89,8 +89,10 @@ class RotRNN(nn.Module):
 
     @nn.compact
     def __call__(self, input_sequence):
+        x = input_sequence[:, 0, :, 0]  # Remove singleton dimensions
+        # x = input_sequence.transpose(0, 2, 1)  # Now, (bsz, L, H)
         # add dummy batch dimension for code
-        x = input_sequence[None, ...]
+        # x = input_sequence[None, ...]
         # print("Input: ", x.shape)
         # naming shortcut
         H, N = self.nheads, self.lru_dim // self.nheads
