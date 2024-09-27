@@ -585,12 +585,12 @@ class S5Operator(nn.Module):
             ]
         elif self.filter_cls == "rotrnn":
             self.filter_fn = [
-                partial(
-                    RotRNN,
+                RotRNN(
                     lru_dim=self.ssm_size,
                     hidden_dim=self.d_model * self.inner_factor,
                     **filter_args,
                 )
+                for _ in range(self.order - 1)
             ]
         elif self.filter_cls == "identity":
             self.filter_fn = [IdentitySSM() for _ in range(self.order - 1)]
