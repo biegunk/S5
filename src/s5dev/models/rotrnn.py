@@ -14,6 +14,7 @@ class RotRNN(nn.Module):
     max_phase: float = 6.28
     bidirectional: bool = False
     step_rescale: float = 0.0
+    activation: str = "gelu"
 
     def theta_init(self, rng_key, N, max_phase):
         return jnp.log(jax.random.uniform(rng_key, shape=(N, 1), maxval=max_phase))
@@ -146,8 +147,30 @@ class RotRNN(nn.Module):
         y = y.transpose(2, 1, 0, 3)  # H T B N -> B T H N
         y = jnp.einsum("Dn,BTn->BTD", C, y.reshape(batch_sz, T, -1)) + D * x
 
-        output_sequence = jnp.expand_dims(
-            y.transpose(0, 2, 1), (1, 3)
-        )  # Now, (bsz,1,H,1,L)
+        # Define activations
+        if self.activation in ["full_glu"]:
+            self.out1 = nn.Dense(self.H)
+            self.out2 = nn.Dense(self.H)
+        elif self.activation in ["half_glu1", "half_glu2"]:
+            self.out2 = nn.Dense(self.H)
 
-        return output_sequence
+        if self.activation in ["full_glu"]:
+            y = nn.activation.gelu(y, approximate=False)
+            y = self.out1(y) * jax.nn.sigmoid(self.out2(y))
+        elif self.activation in ["half_glu1"]:
+            y = nn.activation.gelu(y, approximate=False)
+            y = y * jax.nn.sigmoid(self.out2(y))
+        elif self.activation in ["half_glu2"]:
+            # Only apply GELU to the gate input
+            x1 = nn.activation.gelu(y, approximate=False)
+            y = y * jax.nn.sigmoid(self.out2(x1))
+        elif self.activation in ["gelu"]:
+            y = nn.activation.gelu(y, approximate=False)
+        else:
+            raise NotImplementedError(
+                "Activation: {} not implemented".format(self.activation)
+            )
+
+        y = jnp.expand_dims(y.transpose(0, 2, 1), (1, 3))  # Now, (bsz,1,H,1,L)
+
+        return y

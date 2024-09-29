@@ -64,7 +64,6 @@ layer_kwargs:
         max_phase: 3.14
         bidirectional: False
         nheads: 32
-        activation: "half_glu2"
 
 
 seq_model_kwargs:

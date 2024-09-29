@@ -17,6 +17,7 @@ class LRU(nn.Module):
     max_phase: float = jnp.pi / 10
     bidirectional: bool = False
     step_rescale: float = 1.0
+    activation: str = "gelu"
 
     @staticmethod
     def theta_init(rng_key, lru_dim, max_phase=6.28):
@@ -129,7 +130,31 @@ class LRU(nn.Module):
         y = jax.vmap(lambda x, u: (x @ C.T).real + D * u)(inner_states, x).transpose(
             1, 0, 2
         )  # LBH -> BLH
-        output_sequence = jnp.expand_dims(
-            y.transpose(0, 2, 1), (1, 3)
-        )  # Now, (bsz,1,H,1,L)
-        return output_sequence
+
+        # Define activations
+        if self.activation in ["full_glu"]:
+            self.out1 = nn.Dense(self.H)
+            self.out2 = nn.Dense(self.H)
+        elif self.activation in ["half_glu1", "half_glu2"]:
+            self.out2 = nn.Dense(self.H)
+
+        if self.activation in ["full_glu"]:
+            y = nn.activation.gelu(y, approximate=False)
+            y = self.out1(y) * jax.nn.sigmoid(self.out2(y))
+        elif self.activation in ["half_glu1"]:
+            y = nn.activation.gelu(y, approximate=False)
+            y = y * jax.nn.sigmoid(self.out2(y))
+        elif self.activation in ["half_glu2"]:
+            # Only apply GELU to the gate input
+            x1 = nn.activation.gelu(y, approximate=False)
+            y = y * jax.nn.sigmoid(self.out2(x1))
+        elif self.activation in ["gelu"]:
+            y = nn.activation.gelu(y, approximate=False)
+        else:
+            raise NotImplementedError(
+                "Activation: {} not implemented".format(self.activation)
+            )
+
+        y = jnp.expand_dims(y.transpose(0, 2, 1), (1, 3))  # Now, (bsz,1,H,1,L)
+
+        return y
