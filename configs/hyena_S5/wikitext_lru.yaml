@@ -61,6 +61,7 @@ layer_kwargs:
         r_max: 0.999
         max_phase: 3.14
         bidirectional: False
+        activation: "gelu"
 
 seq_model_kwargs:
     max_position_embeddings: 0
