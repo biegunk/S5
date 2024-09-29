@@ -53,7 +53,7 @@ layer_kwargs:
     outer_mixing: False
     drop_rate: 0.0
     filter_dropout: 0.0
-    filter_cls: 'rotrnn'
+    filter_cls: 'lru'
     post_order_ffn: False
     short_filter_order: 3
     activation_type: "id"
