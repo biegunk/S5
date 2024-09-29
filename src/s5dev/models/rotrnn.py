@@ -149,21 +149,21 @@ class RotRNN(nn.Module):
 
         # Define activations
         if self.activation in ["full_glu"]:
-            self.out1 = nn.Dense(self.hidden_dim)
-            self.out2 = nn.Dense(self.hidden_dim)
+            out1 = nn.Dense(self.hidden_dim)
+            out2 = nn.Dense(self.hidden_dim)
         elif self.activation in ["half_glu1", "half_glu2"]:
-            self.out2 = nn.Dense(self.hidden_dim)
+            out2 = nn.Dense(self.hidden_dim)
 
         if self.activation in ["full_glu"]:
             y = nn.activation.gelu(y, approximate=False)
-            y = self.out1(y) * jax.nn.sigmoid(self.out2(y))
+            y = out1(y) * jax.nn.sigmoid(out2(y))
         elif self.activation in ["half_glu1"]:
             y = nn.activation.gelu(y, approximate=False)
-            y = y * jax.nn.sigmoid(self.out2(y))
+            y = y * jax.nn.sigmoid(out2(y))
         elif self.activation in ["half_glu2"]:
             # Only apply GELU to the gate input
             x1 = nn.activation.gelu(y, approximate=False)
-            y = y * jax.nn.sigmoid(self.out2(x1))
+            y = y * jax.nn.sigmoid(out2(x1))
         elif self.activation in ["gelu"]:
             y = nn.activation.gelu(y, approximate=False)
         else:
