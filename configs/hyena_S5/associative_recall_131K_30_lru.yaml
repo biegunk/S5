@@ -44,7 +44,7 @@ d_inner: 256
 
 layer: "S5_operator"
 layer_kwargs:
-    ssm_size: 32
+    ssm_size: 64
     ssm_blocks: 16
     order: 2
     num_heads: 1
