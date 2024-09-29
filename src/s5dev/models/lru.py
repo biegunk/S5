@@ -75,17 +75,10 @@ class LRU(nn.Module):
             x: jnp.array(TD)
         """
         theta_log = self.param(
-            "theta_log",
-            self.theta_init,
-            self.lru_dim,
-            self.max_phase,
+            "theta_log", self.theta_init, self.lru_dim, self.max_phase
         )
         nu_log = self.param(
-            "nu_log",
-            self.nu_init,
-            self.lru_dim,
-            self.r_min,
-            self.r_max,
+            "nu_log", self.nu_init, self.lru_dim, self.r_min, self.r_max
         )
         B_re = self.param("B_re", self.b_init, self.lru_dim, self.hidden_dim)
         B_im = self.param("B_im", self.b_init, self.lru_dim, self.hidden_dim)
@@ -107,11 +100,8 @@ class LRU(nn.Module):
         x = input_sequence[:, 0, :, 0]  # Remove singleton dimensions
         x = x.transpose(0, 2, 1)  # Now, (bsz, L, H)
 
-        # Running the LRU + output projection
-        # For details on parallel scan, check discussion in Smith et al (2022).
-        Lambda_elements = jnp.repeat(Lambda[None, ...], x.shape[1], axis=0)
-        # Lambda_elements = jnp.repeat(Lambda[None, ...], x.shape[0], axis=0)
-        Lambda_elements = Lambda_elements.transpose(1, 0, 2)  # BLN -> LBN
+        Lambda_elements = jnp.repeat(Lambda[None, ...], x.shape[0], axis=0)
+        # Lambda_elements = Lambda_elements.transpose(1, 0, 2)  # BLN -> LBN
 
         Bu_elements = jax.vmap(lambda u: u @ B_norm.T)(x)  # LBN
         # Bu_elements = jnp.einsum("LH,NH->LN", x, B_norm)
@@ -126,10 +116,9 @@ class LRU(nn.Module):
                 [inner_states, backward], axis=-1
             )  # BLN -> BL2N
 
-        # y = jnp.einsum("HN,LN->LH", C, inner_states).real + jnp.einsum("H,LH->LH", D, x)
-        y = jax.vmap(lambda x, u: (x @ C.T).real + D * u)(inner_states, x).transpose(
-            1, 0, 2
-        )  # LBH -> BLH
+        y = jnp.einsum("HN,LBN->BLH", C, inner_states).real + jnp.einsum(
+            "H,LBH->BLH", D, x
+        )
 
         # Define activations
         if self.activation in ["full_glu"]:
