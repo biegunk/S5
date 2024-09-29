@@ -149,10 +149,10 @@ class RotRNN(nn.Module):
 
         # Define activations
         if self.activation in ["full_glu"]:
-            self.out1 = nn.Dense(self.H)
-            self.out2 = nn.Dense(self.H)
+            self.out1 = nn.Dense(self.hidden_dim)
+            self.out2 = nn.Dense(self.hidden_dim)
         elif self.activation in ["half_glu1", "half_glu2"]:
-            self.out2 = nn.Dense(self.H)
+            self.out2 = nn.Dense(self.hidden_dim)
 
         if self.activation in ["full_glu"]:
             y = nn.activation.gelu(y, approximate=False)
