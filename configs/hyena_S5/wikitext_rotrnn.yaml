@@ -58,7 +58,7 @@ layer_kwargs:
     return_state: False
     filter_args:
         r_min: 0.1
-        r_max: 0.999
+        r_max: 0.99
         max_phase: 0.314
         bidirectional: False
         nheads: 32
