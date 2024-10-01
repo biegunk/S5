@@ -57,9 +57,9 @@ layer_kwargs:
     activation_type: "id"
     return_state: False
     filter_args:
-        r_min: 0.1
-        r_max: 0.99
-        max_phase: 0.314
+        r_min: 0.01
+        r_max: 0.999
+        max_phase: 0.0314
         bidirectional: False
         nheads: 32
         activation: "gelu"
