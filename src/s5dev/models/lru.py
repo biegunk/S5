@@ -61,11 +61,17 @@ class LRU(nn.Module):
         return a_j * a_i, a_j * bu_i + bu_j
 
     def mix_sequence(self, Lambda_elements, Bu_elements, reverse=False):
-        elements = (Lambda_elements, Bu_elements)
-        _, inner_states = parallel_scan(
-            self.binary_operator_diag, elements, reverse=reverse
-        )  # all x_k  # LBN
-        # inner_states = inner_states.transpose(1, 0, 2)  # LBN -> BLN
+        Bu_elements = Bu_elements.transpose(1, 0, 2)  # LBN -> BLN
+        scan = jax.vmap(
+            lambda l, x, r: parallel_scan(self.binary_operator_diag, (l, x), reverse=r),
+            in_axes=(None, 0, None),
+            out_axes=0,
+        )
+        # _, inner_states = parallel_scan(
+        #     self.binary_operator_diag, elements, reverse=reverse
+        # )  # all x_k  # LBN
+        _, inner_states = scan(Lambda_elements, Bu_elements, reverse)  # BLN
+        inner_states = inner_states.transpose(1, 0, 2)  # BLN -> LBN
         return inner_states
 
     @nn.compact
@@ -99,14 +105,12 @@ class LRU(nn.Module):
 
         x = input_sequence[:, 0, :, 0]  # Remove singleton dimensions
         x = x.transpose(0, 2, 1)  # Now, (bsz, L, H)
+        x = x.transpose(1, 0, 2)  # Now, (L, bsz, H)
 
-        Lambda_elements = jnp.repeat(Lambda[None, ...], x.shape[0], axis=0)
-        # Lambda_elements = Lambda_elements.transpose(1, 0, 2)  # BLN -> LBN
+        Lambda_elements = jnp.repeat(Lambda[None, ...], x.shape[0], axis=0)  # (L, H)
 
-        Bu_elements = jax.vmap(lambda u: u @ B_norm.T)(x)  # LBN
-        # Bu_elements = jnp.einsum("LH,NH->LN", x, B_norm)
+        Bu_elements = jnp.einsum("Hi,LBi->LBH", B_norm, x)
 
-        # print(Lambda_elements.shape, Bu_elements.shape)
         inner_states = self.mix_sequence(Lambda_elements, Bu_elements, reverse=False)
         if self.bidirectional:
             C2 = C_re2 + 1j * C_im2
